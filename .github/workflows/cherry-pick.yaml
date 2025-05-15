@@ -1,0 +1,55 @@
+name: Auto Cherry-Pick on Merge
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  cherry-pick:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout the repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # 체리픽에 필요
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check for cherry-pick label
+        id: check_label
+        run: |
+          label=$(echo "${{ toJson(github.event.pull_request.labels) }}" | jq -r '.[] | select(.name | startswith("cherry-pick-")) | .name' || true)
+          echo "label=$label" >> $GITHUB_OUTPUT
+
+      - name: Cherry-pick if label exists
+        if: steps.check_label.outputs.label != ''
+        run: |
+          TARGET_BRANCH=$(echo "${{ steps.check_label.outputs.label }}" | sed 's/^cherry-pick-//')
+          PR_BRANCH="cherry-pick-${{ github.event.pull_request.number }}-to-$TARGET_BRANCH"
+
+          git fetch origin $TARGET_BRANCH
+          git checkout -b $PR_BRANCH origin/$TARGET_BRANCH
+
+          # cherry-pick all commits from merged PR
+          git cherry-pick -x ${{ github.event.pull_request.merge_commit_sha }}
+
+          git push origin $PR_BRANCH
+
+          # Create a new PR
+          gh pr create \
+            --title "Cherry-pick #${{ github.event.pull_request.number }} to $TARGET_BRANCH" \
+            --body "Auto cherry-picked from #${{ github.event.pull_request.number }}" \
+            --base "$TARGET_BRANCH" \
+            --head "$PR_BRANCH"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
