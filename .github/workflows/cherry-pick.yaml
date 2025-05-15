@@ -28,7 +28,8 @@ jobs:
       - name: Check for cherry-pick label
         id: check_label
         run: |
-          label=$(echo "${{ toJson(github.event.pull_request.labels) }}" | jq -r '.[] | select(.name | startswith("cherry-pick-")) | .name' || true)
+          labels_json='${{ toJson(github.event.pull_request.labels) }}'
+          label=$(echo "$labels_json" | jq -r 'if type=="array" then .[] | select(.name | startswith("cherry-pick-")) | .name else empty end' || true)
           echo "label=$label" >> $GITHUB_OUTPUT
 
       - name: Cherry-pick if label exists
