@@ -1,4 +1,4 @@
-name: Auto Cherry-Pick on Merge
+name: Safe Auto Cherry-Pick
 
 on:
   pull_request:
@@ -16,40 +16,55 @@ jobs:
 
     steps:
       - name: Checkout the repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 체리픽에 필요
+          fetch-depth: 0
 
       - name: Set up Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Check for cherry-pick label
-        id: check_label
+      - name: Detect cherry-pick label
+        id: detect
         run: |
-          labels_json='${{ toJson(github.event.pull_request.labels) }}'
-          label=$(echo "$labels_json" | jq -r 'if type=="array" then .[] | select(.name | startswith("cherry-pick-")) | .name else empty end' || true)
-          echo "label=$label" >> $GITHUB_OUTPUT
+          label=$(echo '${{ toJson(github.event.pull_request.labels) }}' | jq -r '.[] | select(.name | startswith("cherry-pick-")) | .name' || true)
+          echo "LABEL=$label" >> $GITHUB_ENV
 
-      - name: Cherry-pick if label exists
-        if: steps.check_label.outputs.label != ''
+      - name: Exit if no cherry-pick label
+        if: env.LABEL == ''
+        run: echo "No cherry-pick label found. Skipping..."
+
+      - name: Prepare cherry-pick branch
+        if: env.LABEL != ''
         run: |
-          TARGET_BRANCH=$(echo "${{ steps.check_label.outputs.label }}" | sed 's/^cherry-pick-//')
+          TARGET_BRANCH=$(echo "$LABEL" | sed 's/^cherry-pick-//')
           PR_BRANCH="cherry-pick-${{ github.event.pull_request.number }}-to-$TARGET_BRANCH"
 
           git fetch origin $TARGET_BRANCH
           git checkout -b $PR_BRANCH origin/$TARGET_BRANCH
 
-          # cherry-pick all commits from merged PR
-          git cherry-pick -x -m 1 ${{ github.event.pull_request.merge_commit_sha }}
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
 
+      - name: Cherry-pick all commits from PR
+        if: env.LABEL != ''
+        run: |
+          COMMITS=$(gh pr view ${{ github.event.pull_request.number }} --json commits -q '.commits[].oid')
+          for COMMIT in $COMMITS; do
+            git cherry-pick -x $COMMIT || { echo "Cherry-pick failed"; exit 1; }
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push and create PR
+        if: env.LABEL != ''
+        run: |
           git push origin $PR_BRANCH
 
-          # Create a new PR
           gh pr create \
             --title "Cherry-pick #${{ github.event.pull_request.number }} to $TARGET_BRANCH" \
-            --body "Auto cherry-picked from #${{ github.event.pull_request.number }}" \
+            --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}" \
             --base "$TARGET_BRANCH" \
             --head "$PR_BRANCH"
         env:
