@@ -42,7 +42,7 @@ jobs:
           git checkout -b $PR_BRANCH origin/$TARGET_BRANCH
 
           # cherry-pick all commits from merged PR
-          git cherry-pick -x ${{ github.event.pull_request.merge_commit_sha }}
+          git cherry-pick -x -m 1 ${{ github.event.pull_request.merge_commit_sha }}
 
           git push origin $PR_BRANCH
 
