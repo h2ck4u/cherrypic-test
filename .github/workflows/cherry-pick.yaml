@@ -52,9 +52,16 @@ jobs:
         if: env.LABEL != ''
         run: |
           COMMITS=$(gh pr view ${{ github.event.pull_request.number }} --json commits -q '.commits[].oid')
+          HAS_CONFLICT=false
           for COMMIT in $COMMITS; do
-            git cherry-pick -x $COMMIT || { echo "Cherry-pick failed"; exit 1; }
+            if ! git cherry-pick -x $COMMIT; then
+              echo "Conflict detected during cherry-pick"
+              git cherry-pick --abort
+              HAS_CONFLICT=true
+              break
+            fi
           done
+          echo "HAS_CONFLICT=$HAS_CONFLICT" >> $GITHUB_ENV
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -64,9 +71,9 @@ jobs:
           git push origin $CHERRYPICK_BRANCH
 
           gh pr create \
-            --title "Cherry-pick #${{ github.event.pull_request.number }} to $TARGET_BRANCH" \
-            --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}" \
-            --base "$TARGET_BRANCH" \
-            --head "$CHERRYPICK_BRANCH"
+          --title "Cherry-pick #${{ github.event.pull_request.number }} to $TARGET_BRANCH" \
+          --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}" \
+          --base "$TARGET_BRANCH" \
+          --head "$CHERRYPICK_BRANCH"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
