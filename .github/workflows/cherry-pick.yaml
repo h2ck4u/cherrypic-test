@@ -63,7 +63,7 @@ jobs:
           done
           echo "HAS_CONFLICT=$HAS_CONFLICT" >> $GITHUB_ENV
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TEST_TOKEN }}
 
       - name: Push and create PR
         if: env.LABEL != ''
@@ -76,4 +76,4 @@ jobs:
           --base "$TARGET_BRANCH" \
           --head "$CHERRYPICK_BRANCH"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TEST_TOKEN }}
