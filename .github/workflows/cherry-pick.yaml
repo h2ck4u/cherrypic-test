@@ -39,13 +39,14 @@ jobs:
         if: env.LABEL != ''
         run: |
           TARGET_BRANCH=$(echo "$LABEL" | sed 's/^cherry-pick-//')
-          PR_BRANCH="cherry-pick-${{ github.event.pull_request.number }}-to-$TARGET_BRANCH"
+          ORIGINAL_BRANCH="${{ github.event.pull_request.head.ref }}"
+          CHERRYPICK_BRANCH="${ORIGINAL_BRANCH}-cherrypick"
 
           git fetch origin $TARGET_BRANCH
-          git checkout -b $PR_BRANCH origin/$TARGET_BRANCH
+          git checkout -b $CHERRYPICK_BRANCH origin/$TARGET_BRANCH
 
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
-          echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
+          echo "CHERRYPICK_BRANCH=$CHERRYPICK_BRANCH" >> $GITHUB_ENV
 
       - name: Cherry-pick all commits from PR
         if: env.LABEL != ''
@@ -60,12 +61,12 @@ jobs:
       - name: Push and create PR
         if: env.LABEL != ''
         run: |
-          git push origin $PR_BRANCH
+          git push origin $CHERRYPICK_BRANCH
 
           gh pr create \
             --title "Cherry-pick #${{ github.event.pull_request.number }} to $TARGET_BRANCH" \
             --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}" \
             --base "$TARGET_BRANCH" \
-            --head "$PR_BRANCH"
+            --head "$CHERRYPICK_BRANCH"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
