@@ -54,6 +54,12 @@ jobs:
           COMMITS=$(gh pr view ${{ github.event.pull_request.number }} --json commits -q '.commits[].oid')
           HAS_CONFLICT=false
           for COMMIT in $COMMITS; do
+            PARENTS=$(git rev-list --parents -n 1 $COMMIT | wc -w)
+            if [ "$PARENTS" -gt 2 ]; then
+              echo "Skipping merge commit: $COMMIT"
+              continue
+            fi
+
             if ! git cherry-pick -x $COMMIT; then
               echo "Conflict detected during cherry-pick"
               git cherry-pick --abort
@@ -63,7 +69,7 @@ jobs:
           done
           echo "HAS_CONFLICT=$HAS_CONFLICT" >> $GITHUB_ENV
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
       - name: Push and create PR
         if: env.LABEL != ''
@@ -76,4 +82,4 @@ jobs:
           --base "$TARGET_BRANCH" \
           --head "$CHERRYPICK_BRANCH"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
