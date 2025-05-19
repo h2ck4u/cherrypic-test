@@ -62,11 +62,20 @@ jobs:
 
             if ! git cherry-pick -x $COMMIT; then
               echo "Conflict detected during cherry-pick"
-              git cherry-pick --abort
-              HAS_CONFLICT=true
-              break
+
+              # Automatically resolve all conflicts in favor of incoming changes
+              git diff --name-only --diff-filter=U | xargs git checkout --theirs
+              git add .
+              
+              git cherry-pick --continue || {
+                echo "Failed to continue cherry-pick after auto-resolving"
+                git cherry-pick --abort
+                HAS_CONFLICT=true
+                break
+              }
             fi
           done
+
           echo "HAS_CONFLICT=$HAS_CONFLICT" >> $GITHUB_ENV
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
