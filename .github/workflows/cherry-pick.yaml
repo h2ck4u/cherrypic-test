@@ -43,52 +43,63 @@ jobs:
           CHERRYPICK_BRANCH="${ORIGINAL_BRANCH}-cherrypick"
 
           git fetch origin $TARGET_BRANCH
+          git fetch origin $ORIGINAL_BRANCH
+
           git checkout -b $CHERRYPICK_BRANCH origin/$TARGET_BRANCH
 
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "CHERRYPICK_BRANCH=$CHERRYPICK_BRANCH" >> $GITHUB_ENV
 
-      - name: Cherry-pick all commits from PR
+      - name: Cherry-pick all commits from PR (force incoming changes)
         if: env.LABEL != ''
         run: |
-          COMMITS=$(gh pr view ${{ github.event.pull_request.number }} --json commits -q '.commits[].oid')
-          HAS_CONFLICT=false
+          COMMITS=$(git log origin/${{ github.event.pull_request.head.ref }} ^origin/${{ github.event.pull_request.base.ref }} --pretty=format:"%H" --reverse)
           for COMMIT in $COMMITS; do
+            # Skip merge commits
             PARENTS=$(git rev-list --parents -n 1 $COMMIT | wc -w)
             if [ "$PARENTS" -gt 2 ]; then
-              echo "Skipping merge commit: $COMMIT"
+              echo "⚠️ Skipping merge commit: $COMMIT"
               continue
             fi
 
+            echo "🔄 Cherry-picking $COMMIT"
             if ! git cherry-pick -x $COMMIT; then
-              echo "Conflict detected during cherry-pick"
+              echo "⚠️ Conflict detected. Auto-resolving in favor of incoming changes..."
 
-              # Automatically resolve all conflicts in favor of incoming changes
-              git diff --name-only --diff-filter=U | xargs git checkout --theirs
-              git add .
-              
-              git cherry-pick --continue || {
-                echo "Failed to continue cherry-pick after auto-resolving"
+              FILES=$(git diff --name-only --diff-filter=U)
+
+              if [ -z "$FILES" ]; then
+                echo "❌ No conflicted files found. Aborting."
                 git cherry-pick --abort
-                HAS_CONFLICT=true
                 break
-              }
+              fi
+
+              echo "$FILES" | xargs git checkout --theirs
+              git add .
+
+              if ! git cherry-pick --continue; then
+                echo "❌ Failed to continue cherry-pick after auto-resolving"
+                git cherry-pick --abort
+                break
+              fi
             fi
           done
-
-          echo "HAS_CONFLICT=$HAS_CONFLICT" >> $GITHUB_ENV
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
       - name: Push and create PR
         if: env.LABEL != ''
         run: |
-          git push origin $CHERRYPICK_BRANCH
+            ORIGINAL_TITLE=$(gh pr view ${{ github.event.pull_request.number }} --json title -q '.title')
 
-          gh pr create \
-          --title "Cherry-pick #${{ github.event.pull_request.number }} to $TARGET_BRANCH" \
-          --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}" \
-          --base "$TARGET_BRANCH" \
-          --head "$CHERRYPICK_BRANCH"
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+            git push origin $CHERRYPICK_BRANCH
+
+            NEW_PR_URL=$(gh pr create \
+              --title "$ORIGINAL_TITLE" \
+              --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}\n\n⚠️ 충돌이 발생했을 수 있으며 자동으로 incoming changes 기준으로 병합되었습니다." \
+              --base "$TARGET_BRANCH" \
+              --head "$CHERRYPICK_BRANCH")
+
+            # Add 'cherry-pick' label to new PR
+            NEW_PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$')
+            gh pr edit "$NEW_PR_NUMBER" --add-label "auto-cherry-pick"
+          env:
+            GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
