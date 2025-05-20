@@ -88,18 +88,18 @@ jobs:
       - name: Push and create PR
         if: env.LABEL != ''
         run: |
-            ORIGINAL_TITLE=$(gh pr view ${{ github.event.pull_request.number }} --json title -q '.title')
+          ORIGINAL_TITLE=$(gh pr view ${{ github.event.pull_request.number }} --json title -q '.title')
 
-            git push origin $CHERRYPICK_BRANCH
+          git push origin $CHERRYPICK_BRANCH
 
-            NEW_PR_URL=$(gh pr create \
-              --title "$ORIGINAL_TITLE" \
-              --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}\n\n⚠️ 충돌이 발생했을 수 있으며 자동으로 incoming changes 기준으로 병합되었습니다." \
-              --base "$TARGET_BRANCH" \
-              --head "$CHERRYPICK_BRANCH")
+          NEW_PR_URL=$(gh pr create \
+            --title "$ORIGINAL_TITLE" \
+            --body "자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}\n\n⚠️ 충돌이 발생했을 수 있으며 자동으로 incoming changes 기준으로 병합되었습니다." \
+            --base "$TARGET_BRANCH" \
+            --head "$CHERRYPICK_BRANCH")
 
-            # Add 'cherry-pick' label to new PR
-            NEW_PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$')
-            gh pr edit "$NEW_PR_NUMBER" --add-label "auto-cherry-pick"
-          env:
-            GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          # Add 'cherry-pick' label to new PR
+          NEW_PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$')
+          gh pr edit "$NEW_PR_NUMBER" --add-label "auto-cherry-pick"
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
