@@ -1,13 +1,22 @@
-name: Safe Auto Cherry-Pick
+name: Auto Cherry-Pick
 
 on:
   pull_request:
     types:
       - closed
 
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull Request Number to cherry-pick from"
+        required: true
+      label:
+        description: "Target label (e.g. cherry-pick-qa)"
+        required: true
+
 jobs:
   cherry-pick:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     permissions:
@@ -25,36 +34,41 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Detect cherry-pick label
-        id: detect
+      - name: Determine PR context (auto or manual)
+        id: context
         run: |
-          label=$(echo '${{ toJson(github.event.pull_request.labels) }}' | jq -r '.[] | select(.name | startswith("cherry-pick-")) | .name' || true)
-          echo "LABEL=$label" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "PR_NUMBER=${{ github.event.inputs.pr_number }}" >> $GITHUB_ENV
+            echo "LABEL=${{ github.event.inputs.label }}" >> $GITHUB_ENV
+          else
+            echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+            label=$(echo '${{ toJson(github.event.pull_request.labels) }}' | jq -r '.[] | select(.name | startswith("cherry-pick-")) | .name' || true)
+            echo "LABEL=$label" >> $GITHUB_ENV
+          fi
 
       - name: Exit if no cherry-pick label
         if: env.LABEL == ''
-        run: echo "No cherry-pick label found. Skipping..."
+        run: echo "❌ No cherry-pick label found. Skipping..." && exit 0
 
       - name: Prepare cherry-pick branch
-        if: env.LABEL != ''
         run: |
           TARGET_BRANCH=$(echo "$LABEL" | sed 's/^cherry-pick-//')
-          ORIGINAL_BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+
+          ORIGINAL_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName -q '.headRefName')
+          echo "ORIGINAL_BRANCH=$ORIGINAL_BRANCH" >> $GITHUB_ENV
+
           CHERRYPICK_BRANCH="${ORIGINAL_BRANCH}-cherrypick"
+          echo "CHERRYPICK_BRANCH=$CHERRYPICK_BRANCH" >> $GITHUB_ENV
 
           git fetch origin $TARGET_BRANCH
 
           git checkout -b $CHERRYPICK_BRANCH origin/$TARGET_BRANCH
 
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
-          echo "CHERRYPICK_BRANCH=$CHERRYPICK_BRANCH" >> $GITHUB_ENV
-
       - name: Cherry-pick all commits from PR (force incoming changes)
-        if: env.LABEL != ''
         run: |
-          COMMITS=$(git log origin/${{ github.event.pull_request.head.ref }} ^origin/${{ github.event.pull_request.base.ref }} --pretty=format:"%H" --reverse)
+          COMMITS=$(gh pr view "$PR_NUMBER" --json commits -q '.commits[].oid')
           for COMMIT in $COMMITS; do
-            # Skip merge commits
             PARENTS=$(git rev-list --parents -n 1 $COMMIT | wc -w)
             if [ "$PARENTS" -gt 2 ]; then
               echo "⚠️ Skipping merge commit: $COMMIT"
@@ -66,11 +80,10 @@ jobs:
               echo "⚠️ Conflict detected. Auto-resolving in favor of incoming changes..."
 
               FILES=$(git diff --name-only --diff-filter=U)
-
               if [ -z "$FILES" ]; then
-                echo "❌ No conflicted files found. Aborting."
+                echo "❌ No conflicted files found. Aborting cherry-pick."
                 git cherry-pick --abort
-                break
+                continue
               fi
 
               echo "$FILES" | xargs git checkout --theirs
@@ -79,24 +92,23 @@ jobs:
               if ! git cherry-pick --continue; then
                 echo "❌ Failed to continue cherry-pick after auto-resolving"
                 git cherry-pick --abort
-                break
+                continue
               fi
             fi
           done
 
       - name: Push and create PR
-        if: env.LABEL != ''
         run: |
-          ORIGINAL_TITLE=$(gh pr view ${{ github.event.pull_request.number }} --json title -q '.title')
+          ORIGINAL_TITLE=$(gh pr view "$PR_NUMBER" --json title -q '.title')
 
           git push origin $CHERRYPICK_BRANCH
 
           BODY=$(cat <<EOF
-          자동 cherry-pick된 PR입니다. 원본: #${{ github.event.pull_request.number }}
+          자동 cherry-pick된 PR입니다. 원본: #$PR_NUMBER
 
           ⚠️ 충돌이 발생했을 수 있으며 자동으로 incoming changes 기준으로 병합되었습니다.
           EOF
-              )
+          )
 
           NEW_PR_URL=$(gh pr create \
             --title "$ORIGINAL_TITLE" \
@@ -104,7 +116,6 @@ jobs:
             --base "$TARGET_BRANCH" \
             --head "$CHERRYPICK_BRANCH")
 
-          # Add 'cherry-pick' label to new PR
           NEW_PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$')
           gh pr edit "$NEW_PR_NUMBER" --add-label "auto-cherry-pick"
         env:
