@@ -43,7 +43,6 @@ jobs:
           CHERRYPICK_BRANCH="${ORIGINAL_BRANCH}-cherrypick"
 
           git fetch origin $TARGET_BRANCH
-          git fetch origin $ORIGINAL_BRANCH
 
           git checkout -b $CHERRYPICK_BRANCH origin/$TARGET_BRANCH
 
