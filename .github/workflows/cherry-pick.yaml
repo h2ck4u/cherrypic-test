@@ -98,6 +98,8 @@ jobs:
               fi
             fi
           done
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
       - name: Push and create PR
         run: |
