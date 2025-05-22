@@ -64,6 +64,8 @@ jobs:
           git fetch origin $TARGET_BRANCH
 
           git checkout -b $CHERRYPICK_BRANCH origin/$TARGET_BRANCH
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
       - name: Cherry-pick all commits from PR (force incoming changes)
         run: |
