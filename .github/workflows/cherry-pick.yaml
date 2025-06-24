@@ -58,21 +58,48 @@ jobs:
           echo "Source: $SOURCE_BRANCH -> Target: $TARGET_BRANCH"
           echo "Commit SHA: $COMMIT_SHA"
 
-          # PR 정보 및 커밋 목록 가져오기
-          PR_INFO=$(gh pr view $PR_NUMBER --json commits,mergeCommit)
-          MERGE_TYPE=$(echo "$PR_INFO" | jq -r '.mergeCommit.messageHeadline')
+          # PR 정보 가져오기 (merge 방식 포함)
+          PR_INFO=$(gh pr view $PR_NUMBER --json commits,mergeCommit,baseRefName,headRefName)
 
-          # Cherry-pick할 커밋들 결정
+          # Cherry-pick할 커밋 결정
           COMMITS_TO_PICK=""
 
-          # Squash merge 여부 확인 (제목에 squash 정보가 포함됨)
-          if echo "$MERGE_TYPE" | grep -q "^.*\s(#${PR_NUMBER})$"; then
-            echo "Squash merge 감지됨. Merge commit을 사용합니다."
+          # 가장 확실한 방법: merge commit의 부모 수로 판단
+          PARENT_COUNT=$(git rev-list --parents -n 1 $COMMIT_SHA | wc -w)
+          PARENT_COUNT=$((PARENT_COUNT - 1))  # 첫 번째는 커밋 자체이므로 제외
+
+          echo "Merge commit 부모 수: $PARENT_COUNT"
+
+          if [ "$PARENT_COUNT" -eq 1 ]; then
+            # 부모가 1개 = Squash merge 또는 Fast-forward merge
+            echo "Squash merge 또는 Fast-forward merge 감지됨. Merge commit을 사용합니다."
             COMMITS_TO_PICK="$COMMIT_SHA"
           else
-            echo "일반 merge 감지됨. 개별 커밋들을 사용합니다."
-            # Merge commit 제외하고 개별 커밋들만 가져오기
-            COMMITS_TO_PICK=$(echo "$PR_INFO" | jq -r '.commits[] | .oid' | tac | tr '\n' ' ')
+            # 부모가 2개 이상 = 일반 merge
+            echo "일반 merge 감지됨. 개별 커밋들 존재 여부를 확인합니다."
+            
+            # 개별 커밋들의 존재 여부 확인
+            VALID_COMMITS=""
+            INVALID_COMMITS=""
+            
+            for commit in $(echo "$PR_INFO" | jq -r '.commits[] | .oid'); do
+              if git cat-file -e $commit 2>/dev/null; then
+                VALID_COMMITS="$VALID_COMMITS $commit"
+                echo "유효한 커밋: $commit"
+              else
+                INVALID_COMMITS="$INVALID_COMMITS $commit"
+                echo "존재하지 않는 커밋: $commit"
+              fi
+            done
+            
+            if [ -n "$VALID_COMMITS" ]; then
+              # 유효한 커밋들을 역순으로 정렬 (최신 커밋부터)
+              COMMITS_TO_PICK=$(echo $VALID_COMMITS | tr ' ' '\n' | tac | tr '\n' ' ')
+              echo "개별 커밋들을 사용합니다: $COMMITS_TO_PICK"
+            else
+              echo "개별 커밋들이 모두 존재하지 않습니다. Merge commit을 사용합니다."
+              COMMITS_TO_PICK="$COMMIT_SHA"
+            fi
           fi
 
           echo "Cherry-pick할 커밋들: $COMMITS_TO_PICK"
