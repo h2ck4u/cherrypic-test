@@ -1,4 +1,4 @@
-name: Auto Cherry Pick
+name: Auto Cherry-pick
 
 on:
   pull_request:
@@ -6,72 +6,178 @@ on:
 
 jobs:
   cherry-pick:
-    if: github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.labels.*.name, 'cherry-pick-')
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-      pull-requests: write
-
     steps:
-      - name: Extract PR metadata
-        id: extract
-        run: |
-          echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-          echo "PR_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_OUTPUT
-          echo "PR_BRANCH=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
-
-          # Extract cherry-pick target from label
-          for label in "${{ toJson(github.event.pull_request.labels) }}" ; do
-            if [[ $label =~ cherry-pick-([a-zA-Z0-9/_-]+) ]]; then
-              echo "TARGET_BRANCH=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
-              break
-            fi
-          done
-
-      - name: Checkout target branch
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.extract.outputs.TARGET_BRANCH }}
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create cherry-pick branch
-        run: |
-          BRANCH_NAME="${{ steps.extract.outputs.PR_BRANCH }}-cherrypick"
-          git checkout -b "$BRANCH_NAME"
-
-      - name: Fetch original PR commits
-        run: |
-          git fetch origin pull/${{ steps.extract.outputs.PR_NUMBER }}/head:original-pr
-          COMMITS=$(git log --pretty=format:"%H" origin/${{ steps.extract.outputs.PR_BRANCH }} | tac)
-          echo "$COMMITS" > commits.txt
-
-      - name: Cherry-pick commits (skip merge commits)
-        run: |
-          set -eo pipefail
-          while read sha; do
-            if [ "$(git cat-file -t $sha)" = "commit" ] && [ "$(git show -s --pretty=%P $sha | wc -w)" -lt 2 ]; then
-              git cherry-pick $sha || git cherry-pick --abort
-            fi
-          done < commits.txt
-
-      - name: Push cherry-pick branch
-        run: |
-          BRANCH_NAME="${{ steps.extract.outputs.PR_BRANCH }}-cherrypick"
-          git push origin "$BRANCH_NAME"
-
-      - name: Create PR
+      - name: Check for cherry-pick labels and execute
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          gh pr create \
-            --title "${{ steps.extract.outputs.PR_TITLE }}" \
-            --head "${{ steps.extract.outputs.PR_BRANCH }}-cherrypick" \
-            --base "${{ steps.extract.outputs.TARGET_BRANCH }}" \
-            --body "🔁 Cherry-pick of #${{ steps.extract.outputs.PR_NUMBER }} to `${{ steps.extract.outputs.TARGET_BRANCH }}`"
+          # PR 라벨 가져오기
+          LABELS=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name' | tr '\n' ' ')
+          echo "PR Labels: $LABELS"
+
+          # cherry-pick 대상 브랜치 결정
+          TARGET_BRANCH=""
+          SOURCE_BRANCH="${{ github.event.pull_request.base.ref }}"
+
+          if echo "$LABELS" | grep -q "cherry-pick-qa"; then
+            if [ "$SOURCE_BRANCH" = "main" ]; then
+              TARGET_BRANCH="qa"
+            else
+              echo "cherry-pick-qa 라벨은 main 브랜치로의 PR에서만 사용할 수 있습니다."
+              exit 1
+            fi
+          elif echo "$LABELS" | grep -q "cherry-pick-main"; then
+            if [ "$SOURCE_BRANCH" = "qa" ]; then
+              TARGET_BRANCH="main"
+            else
+              echo "cherry-pick-main 라벨은 qa 브랜치로의 PR에서만 사용할 수 있습니다."
+              exit 1
+            fi
+          else
+            echo "cherry-pick 라벨이 없습니다. 작업을 건너뜁니다."
+            exit 0
+          fi
+
+          echo "Source: $SOURCE_BRANCH -> Target: $TARGET_BRANCH"
+          echo "Commit SHA: $COMMIT_SHA"
+
+          # PR 정보 및 커밋 목록 가져오기
+          PR_INFO=$(gh pr view $PR_NUMBER --json commits,mergeCommit)
+          MERGE_TYPE=$(echo "$PR_INFO" | jq -r '.mergeCommit.messageHeadline')
+
+          # Cherry-pick할 커밋들 결정
+          COMMITS_TO_PICK=""
+
+          # Squash merge 여부 확인 (제목에 squash 정보가 포함됨)
+          if echo "$MERGE_TYPE" | grep -q "^.*\s(#${PR_NUMBER})$"; then
+            echo "Squash merge 감지됨. Merge commit을 사용합니다."
+            COMMITS_TO_PICK="$COMMIT_SHA"
+          else
+            echo "일반 merge 감지됨. 개별 커밋들을 사용합니다."
+            # Merge commit 제외하고 개별 커밋들만 가져오기
+            COMMITS_TO_PICK=$(echo "$PR_INFO" | jq -r '.commits[] | .oid' | tac | tr '\n' ' ')
+          fi
+
+          echo "Cherry-pick할 커밋들: $COMMITS_TO_PICK"
+
+          # Cherry-pick 브랜치 이름 생성
+          CHERRY_PICK_BRANCH="cherry-pick-${PR_NUMBER}-to-${TARGET_BRANCH}"
+
+          # 대상 브랜치 기반으로 새 브랜치 생성
+          git fetch origin $TARGET_BRANCH
+          git checkout -b $CHERRY_PICK_BRANCH origin/$TARGET_BRANCH
+
+          # Cherry-pick 실행
+          CONFLICT_OCCURRED=false
+          CONFLICT_FILES=""
+
+          for commit in $COMMITS_TO_PICK; do
+            echo "Cherry-picking commit: $commit"
+            if ! git cherry-pick $commit; then
+              echo "충돌 발생: $commit"
+              CONFLICT_OCCURRED=true
+              CONFLICT_FILES=$(git status --porcelain | grep "^UU\|^AA\|^DD" | awk '{print $2}' | tr '\n' ' ')
+              
+              # 충돌이 있어도 강제로 계속 진행
+              echo "충돌을 임시로 표시하고 계속 진행합니다..."
+              git status --porcelain | grep "^UU\|^AA\|^DD" | while read -r line; do
+                file=$(echo "$line" | awk '{print $2}')
+                echo "=== CONFLICT IN $file ===" >> "$file"
+                echo "<<<<<<< HEAD (current $TARGET_BRANCH)" >> "$file"
+                git show HEAD:"$file" 2>/dev/null || echo "파일이 HEAD에 존재하지 않음" >> "$file"
+                echo "=======" >> "$file"
+                git show $commit:"$file" 2>/dev/null || echo "파일이 $commit에 존재하지 않음" >> "$file"
+                echo ">>>>>>> $commit" >> "$file"
+              done
+              
+              # 충돌 파일들을 staged 상태로 만들기
+              git add .
+              git cherry-pick --continue
+            fi
+          done
+
+          # 브랜치 푸시 (충돌이 있어도 강제로 푸시)
+          git push origin $CHERRY_PICK_BRANCH
+
+          # PR 생성
+          if [ "$CONFLICT_OCCURRED" = true ]; then
+            # 충돌이 있는 경우의 PR 생성
+            gh pr create \
+              --title "🍒⚠️ Cherry-pick (충돌 해결 필요): $PR_TITLE" \
+              --body "⚠️ **이 PR은 충돌이 발생한 cherry-pick입니다. 수동 해결이 필요합니다.**
+              
+              **원본 PR:** #${PR_NUMBER}
+              **대상 브랜치:** \`$TARGET_BRANCH\`
+              **충돌 파일:** \`$CONFLICT_FILES\`
+              
+              ## 충돌 해결 방법:
+              1. 이 브랜치를 로컬로 체크아웃
+              2. 충돌 마커를 찾아 수동으로 해결
+              3. 변경사항을 커밋하고 푸시
+              
+              \`\`\`bash
+              git checkout $CHERRY_PICK_BRANCH
+              git pull origin $CHERRY_PICK_BRANCH
+              # 충돌 파일들을 수동으로 편집
+              git add .
+              git commit -m \"Resolve cherry-pick conflicts\"
+              git push origin $CHERRY_PICK_BRANCH
+              \`\`\`
+              
+              **Cherry-pick된 커밋들:**
+              $(for commit in $COMMITS_TO_PICK; do echo "- \`$commit\`"; done)" \
+              --base $TARGET_BRANCH \
+              --head $CHERRY_PICK_BRANCH \
+              --label "cherry-pick,needs-conflict-resolution"
+            
+            # 원본 PR에 충돌 알림 코멘트
+            gh pr comment $PR_NUMBER --body "⚠️ **자동 Cherry-pick - 충돌 해결 필요**
+            
+            \`$TARGET_BRANCH\` 브랜치로 cherry-pick하는 중 충돌이 발생했습니다.
+            충돌이 포함된 PR이 생성되었으니 수동으로 해결해주세요.
+            
+            **충돌 파일:** \`$CONFLICT_FILES\`
+            
+            PR 링크: https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3A$CHERRY_PICK_BRANCH"
+            
+          else
+            # 충돌이 없는 경우의 정상 PR 생성
+            gh pr create \
+              --title "🍒 Cherry-pick: $PR_TITLE" \
+              --body "이 PR은 #${PR_NUMBER}의 변경사항을 \`$TARGET_BRANCH\` 브랜치로 자동 cherry-pick한 것입니다.
+              
+              **원본 PR:** #${PR_NUMBER}
+              **대상 브랜치:** \`$TARGET_BRANCH\`
+              
+              **Cherry-pick된 커밋들:**
+              $(for commit in $COMMITS_TO_PICK; do echo "- \`$commit\`"; done)
+              
+              충돌 없이 성공적으로 cherry-pick되었습니다. 변경사항을 검토한 후 병합해주세요." \
+              --base $TARGET_BRANCH \
+              --head $CHERRY_PICK_BRANCH \
+              --label "cherry-pick"
+            
+            # 원본 PR에 성공 코멘트
+            gh pr comment $PR_NUMBER --body "✅ **자동 Cherry-pick 성공**
+            
+            \`$TARGET_BRANCH\` 브랜치로 cherry-pick하는 PR이 성공적으로 생성되었습니다.
+            
+            PR 링크: https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3A$CHERRY_PICK_BRANCH"
+          fi
