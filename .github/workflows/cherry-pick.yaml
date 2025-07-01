@@ -62,15 +62,17 @@ jobs:
       - name: Push cherry-pick branch
         run: |
           git push origin HEAD
+
       - name: Create pull request with GH CLI
         run: |
+          title="Cherry-pick: ${{ steps.extract.outputs.pr_title }}"
           body="This PR is a cherry-pick of #${{ steps.extract.outputs.pr_number }} into \`${{ steps.extract.outputs.target_branch }}\`."
           if [[ "${{ steps.cherrypick.outputs.conflict }}" == "true" ]]; then
             body+=" ⚠️ Conflicts were found and must be resolved manually."
           fi
 
           gh pr create \
-            --title "Cherry-pick: ${{ steps.extract.outputs.pr_title }}" \
+            --title "$title" \
             --body "$body" \
             --base ${{ steps.extract.outputs.target_branch }} \
             --head ${{ steps.extract.outputs.pr_head_branch }}-cherry-pick
