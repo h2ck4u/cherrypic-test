@@ -50,7 +50,7 @@ jobs:
       - name: Cherry-pick commit
         id: cherrypick
         run: |
-          if git cherry-pick -m 1 ${{ steps.merge_commit.outputs.merge_commit }}; then
+          if git cherry-pick -m 1 -X theirs ${{ steps.merge_commit.outputs.merge_commit }}; then
             echo "conflict=false" >> $GITHUB_OUTPUT
           else
             echo "conflict=true" >> $GITHUB_OUTPUT
@@ -62,17 +62,20 @@ jobs:
       - name: Push cherry-pick branch
         run: |
           git push origin HEAD
+          - name: Create pull request with GH CLI
+          run: |
+            body="This PR is a cherry-pick of #${{ steps.extract.outputs.pr_number }} into \`${{ steps.extract.outputs.target_branch }}\`."
+            if [[ "${{ steps.cherrypick.outputs.conflict }}" == "true" ]]; then
+              body+=" ⚠️ Conflicts were found and must be resolved manually."
+            fi
 
-      - name: Create pull request with GH CLI
-        run: |
-          gh pr create \
-            --title "Cherry-pick: ${{ steps.extract.outputs.pr_title }}" \
-            --body "This PR is a cherry-pick of #${{ steps.extract.outputs.pr_number }} into \`${{ steps.extract.outputs.target_branch }}`.
-            ${{ steps.cherrypick.outputs.conflict == 'true' && '⚠️ Conflicts were found and must be resolved manually.' || '' }}" \
-            --base ${{ steps.extract.outputs.target_branch }} \
-            --head ${{ steps.extract.outputs.pr_head_branch }}-cherry-pick
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            gh pr create \
+              --title "Cherry-pick: ${{ steps.extract.outputs.pr_title }}" \
+              --body "$body" \
+              --base ${{ steps.extract.outputs.target_branch }} \
+              --head ${{ steps.extract.outputs.pr_head_branch }}-cherry-pick
+          env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Comment if conflict
         if: steps.cherrypick.outputs.conflict == 'true'
